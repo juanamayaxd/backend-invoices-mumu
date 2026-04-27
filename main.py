@@ -56,14 +56,14 @@ PATRONES_EXTRACCION = {
         "intereses_mora": r"Meses Mora:\s*([1-9]\d*)"
     },
     TipoServicio.gas: {
-        "empresa": r"(GAS NATURAL[^\n]+)",
+        "empresa": r"(VANTI[^\n]+|GAS NATURAL[^\n]+)",
         "nit": r"-\s*([\d\.-]+)\n:TIN",
-        "fecha_vencimiento": r"\d{2}\s+[A-Za-z]{3}\.\s+\d{4}\s+(\d{2}\s+[A-Za-z]{3}\.\s+\d{4})",
-        "cuenta_contrato": r"\n(\d{8})\n",
-        "numero_factura": r"\n(\d{16})\n",
+        "fecha_vencimiento": r"(\d{2}\s+[A-Za-z]{3}\.\s+\d{4})\s+\d{2}\s+[A-Za-z]{3}\.\s+\d{4}\s+[A-Za-z]{3}\.",
+        "cuenta_contrato": r"(?:^|\n)(\d{8})(?:\n|$)",
+        "numero_factura": r"([A-Z0-9]+)atnev",
         "periodo_facturado": r"([A-Za-z]{3}\.\s*-\s*[A-Za-z]{3}\.\s+\d{4})",
-        "fecha_generacion": r"(\d{2}\s+[A-Za-z]{3}\.\s+\d{4})\s+\d{2}\s+[A-Za-z]{3}\.\s+\d{4}",
-        "valor_pagar": r"([\d\.,]+)$",
+        "fecha_generacion": r"\n(\d{2}\s+[A-Za-z]{3}\.\s+\d{4})\n\$",
+        "valor_pagar": r"([\d\.,]+)\n[\d\.,]+\n\(\d{3}\)",
         "intereses_mora": r"(mora_inexistente)"
     },
     TipoServicio.luz: {
@@ -82,29 +82,37 @@ PATRONES_EXTRACCION = {
         "nit": r"16\.\s*NIT/CC:\s*([\d\.-]+)",
         "fecha_vencimiento": r"17\.\s*Fecha L[íi]mite de.*?D[íi]a\s*(\d+)\s*Mes\s*(\d+)\s*Año\s*(\d{4})",
         "cuenta_contrato": r"cuenta contrato N[°º]\s*(\d+)",
-        "numero_factura": r"19\.\s*Número de\n[^\d]*(\d+)",
-        "periodo_facturado": r"([A-Z]{3}/\d{2}/\d{4}\s*-\s*[A-Z]{3}/\d{2}/\d{4})",
-        "fecha_generacion": r"19\.\s*Número de\n[^\n]*?Fecha Día\s*(\d+)\s*Mes\s*(\d+)\s*Año\s*(\d{4})",
+        "numero_factura": r"19\.\s*Número de\s*([A-Z0-9]+)",
+        "periodo_facturado": r"([A-Za-z]{3}/\d{2}/\d{4}\s*-\s*[A-Za-z]{3}/\d{2}/\d{4}|[A-Za-z]+\s*-\s*[A-Za-z]+\s+de\s+\d{4})",
+        "fecha_generacion": r"19\.\s*Número de.*?Fecha Día\s*(\d+)\s*Mes\s*(\d+)\s*Año\s*(\d{4})",
         "valor_pagar": r"21\.\s*Valor pagar\s*\$\s*([\d\.,]+)",
         "intereses_mora": r"(mora_inexistente)"
     }
 }
 
 def normalizar_valor(s: str) -> str:
-    if "No " in s:
-        return ""
-    s = s.upper()
-    meses = {"ENE":"01", "FEB":"02", "MAR":"03", "ABR":"04", "MAY":"05", "JUN":"06", "JUL":"07", "AGO":"08", "SEP":"09", "OCT":"10", "NOV":"11", "DIC":"12"}
+    s = s.upper().strip()
+    meses = {
+        "ENERO":"01", "FEBRERO":"02", "MARZO":"03", "ABRIL":"04", "MAYO":"05", "JUNIO":"06",
+        "JULIO":"07", "AGOSTO":"08", "SEPTIEMBRE":"09", "OCTUBRE":"10", "NOVIEMBRE":"11", "DICIEMBRE":"12",
+        "ENE":"01", "FEB":"02", "MAR":"03", "ABR":"04", "MAY":"05", "JUN":"06",
+        "JUL":"07", "AGO":"08", "SEP":"09", "OCT":"10", "NOV":"11", "DIC":"12"
+    }
+    es_fecha = False
     for k, v in meses.items():
-        s = s.replace(k, v)
-    if '/' in s or '-' in s:
+        if k in s:
+            s = s.replace(k, v)
+            es_fecha = True
+            
+    if es_fecha or '/' in s or ('-' in s and not re.search(r'\d{6,}', s)):
         partes = re.findall(r'\d+', s)
         partes.sort()
         return "".join(partes)
-    s = re.sub(r'[\$\s\.\-]', '', s)
-    if s.endswith(',00'):
+
+    s = re.sub(r'[^\d\,\.]', '', s)
+    if s.endswith(',00') or s.endswith('.00'):
         s = s[:-3]
-    s = s.replace(',', '')
+    s = re.sub(r'[\.\,]', '', s)
     return s
 
 def comparar_factura_dian(datos_f: dict, datos_d: dict):
@@ -112,10 +120,14 @@ def comparar_factura_dian(datos_f: dict, datos_d: dict):
     for k in datos_d.keys():
         if k == "intereses_mora":
             continue
-        vf = normalizar_valor(datos_f.get(k, ""))
-        vd = normalizar_valor(datos_d.get(k, ""))
-        if vf != vd:
-            diferencias[k] = {"factura": datos_f.get(k, ""), "dian": datos_d.get(k, "")}
+        vf = datos_f.get(k, "")
+        vd = datos_d.get(k, "")
+        if "No encontrada" in vf or "No encontrada" in vd:
+            continue
+        vnf = normalizar_valor(vf)
+        vnd = normalizar_valor(vd)
+        if vnf != vnd:
+            diferencias[k] = {"factura": vf, "dian": vd}
     return len(diferencias) == 0, diferencias
 
 def extraer_datos_dinamicos(texto: str, tipo: Union[TipoServicio, str]) -> dict:
@@ -130,6 +142,8 @@ def extraer_datos_dinamicos(texto: str, tipo: Union[TipoServicio, str]) -> dict:
                 meses_dict = {"1":"ENE","2":"FEB","3":"MAR","4":"ABR","5":"MAY","6":"JUN","7":"JUL","8":"AGO","9":"SEP","10":"OCT","11":"NOV","12":"DIC"}
                 datos[campo] = f"{meses_dict.get(mes, mes)}/{dia.zfill(2)}/{ano}"
             elif campo == "nit" and tipo == TipoServicio.gas:
+                datos[campo] = match.group(1).strip()[::-1]
+            elif campo == "numero_factura" and tipo == TipoServicio.gas:
                 datos[campo] = match.group(1).strip()[::-1]
             else:
                 datos[campo] = match.group(1).strip()
